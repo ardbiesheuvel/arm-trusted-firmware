@@ -8,6 +8,7 @@
 #include <asm_macros.S>
 #include <common/bl_common.h>
 #include <context.h>
+#include <pl011.h>
 
 /* -----------------------------------------------------------------------------
  * Very simple stackless exception handlers used by the spm shim layer.
@@ -90,9 +91,30 @@ do_smc:
 	eret
 
 	/* AArch64 system instructions trap are handled as a panic for now */
-handle_sys_trap:
 panic:
-	b	panic
+	mov_imm	x1, 0x2A400000
+
+	adr	x4, esr_el1_str
+	bl	asm_print_str
+
+	mrs	x4, esr_el1
+	bl	asm_print_hex
+
+	adr	x4, elr_el1_str
+	bl	asm_print_str
+
+	mrs	x4, elr_el1
+	bl	asm_print_hex
+
+	adr	x4, far_el1_str
+	bl	asm_print_str
+
+	mrs	x4, far_el1
+	bl	asm_print_hex
+
+handle_sys_trap:
+	wfi
+	b	handle_sys_trap
 end_vector_entry SynchronousExceptionA64
 
 vector_entry IrqA64, .spm_shim_exceptions
@@ -126,3 +148,64 @@ end_vector_entry FiqA32
 vector_entry SErrorA32, .spm_shim_exceptions
 	b	.
 end_vector_entry SErrorA32
+
+asm_print_str:
+	mov	x3, x30
+1:
+	ldrb	w0, [x4], #0x1
+	cbz	x0, 2f
+	bl	__console_pl011_core_putc
+	b	1b
+2:
+	ret	x3
+
+/*
+ * This function prints a hexadecimal number in x4.
+ * In: x4 = the hexadecimal to print.
+ * Clobber: x30, x0 - x3, x5
+ */
+ asm_print_hex:
+	mov	x3, x30
+	mov	x5, #64  /* No of bits to convert to ascii */
+1:
+	sub	x5, x5, #4
+	lsrv	x0, x4, x5
+	and	x0, x0, #0xf
+	cmp	x0, #0xA
+	b.lo	2f
+	/* Add by 0x27 in addition to ASCII_OFFSET_NUM
+	 * to get ascii for characters 'a - f'.
+	 */
+	add	x0, x0, #0x27
+2:
+	add	x0, x0, #'0'
+	bl	__console_pl011_core_putc
+	cbnz	x5, 1b
+	ret	x3
+
+__console_pl011_core_putc:
+	/* Prepend '\r' to '\n' */
+	cmp	w0, #0xA
+	b.ne	2f
+1:
+	/* Check if the transmit FIFO is full */
+	ldr	w2, [x1, #UARTFR]
+	tbnz	w2, #PL011_UARTFR_TXFF_BIT, 1b
+	mov	w2, #0xD
+	str	w2, [x1, #UARTDR]
+2:
+	/* Check if the transmit FIFO is full */
+	ldr	w2, [x1, #UARTFR]
+	tbnz	w2, #PL011_UARTFR_TXFF_BIT, 2b
+	str	w0, [x1, #UARTDR]
+	ret
+
+	.align	2
+esr_el1_str:
+	.asciz "\nESR_EL1:  "
+	.align	2
+elr_el1_str:
+	.asciz "\nELR_EL1:  "
+	.align	2
+far_el1_str:
+	.asciz "\nFAR_EL1:  "
